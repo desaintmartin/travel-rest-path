@@ -1,103 +1,115 @@
 # -*- coding: utf-8 -*-
 
 import argparse
-import httplib2
 import json
+import logging
 import os
-import pprint
 
-DEFAULT_URL = "https://rest.slapos.org/"
-ROOT_CONTENT_TYPE = "application/vnd.slapos.org.hal+json; class=slapos.org.master"
-LINK_NAME = '_links'
-CLASS_NAME = '_class'
-PERSON_CLASS = 'slapos.org.person'
-PERSON_ID = 'title'
-PATH_TO_HOSTING_SUBSCRIPTION_LIST = ['http://slapos.org/reg/me',
-                                     'http://slapos.org/reg/hosting_subscription',
-                                     'item',
-                                     'http://slapos.org/reg/instance']
+from hateoasbrowser import SlaposHateoasBrowser
 
-PATH_TO_HOSTING_SUBSCRIPTION = 'item'
-PATH_TO_INSTANCE_LIST = ['http://slapos.org/reg/instance']
+def getParameters():
+  parser = argparse.ArgumentParser(
+    description='Get Instance list with their request parameters')
+  parser.add_argument('--cert', dest='certificate', required=True)
+  parser.add_argument('--key', dest='key', required=True)
+  parser.add_argument('--host', dest='host', default=None)
+  config = parser.parse_args()
+  return config.host, config.certificate, config.key
 
-# XXX Should be split into a generic class to seek throught rest API
-# XXX and a function specific for the work
+def getInstanceList(browser):
+  """
+  Return the list of all instances of all hosting subscription:
+  {
+    'hosting1': {
+      'instance1': {
+        'info1': 'value1',
+        'info2': 'value2',
+       },
+       'instance2': { ... },
+    },
+    'hosting2': { ... },
+  }
+  """
+  # Go to hosting subscription list
+  browser.goToRootObject()
+  browser.goToObject('http://slapos.org/reg/me')
+  browser.goToObject('http://slapos.org/reg/hosting_subscription')
+  
+  # Get all hosting subscriptions
+  for item in browser.getCurrentLinks()['item']:
+    # XXX hardcoded
+    if item['href'] not in [
+        'https://resilientmaster:10007/hosting_subscription_module/20131011-91069/HostingSubscription_getHateoas',
+        #'https://resilientmaster:10007/hosting_subscription_module/20131011-AA8D5/HostingSubscription_getHateoas',
+        ]:
+      continue
+    
+    # XXX: implement this in browser itself, don't use private method
+    browser._fetchObject(item['href'], item['type'])['_links']
+    hosting_subscription_title = browser.getCurrentObject()['title']
+    # Get all instances of current hosting subscription
+    browser.goToObject('http://slapos.org/reg/instance')
+    instance_uri_list = browser.getCurrentLinks()['item']
+    instance_dict = {}
+    hosting_subscription_dict = {}
+    for instance_uri in instance_uri_list:
+      browser._fetchObject(instance_uri['href'], instance_uri['type'])
+      current_instance_informations = browser.getCurrentObject()
+      instance_title = current_instance_informations.pop('title')
+      instance_dict[instance_title] = current_instance_informations
+    hosting_subscription_dict[hosting_subscription_title] = instance_dict
 
-class InsideRESTSlapOS():
+  return hosting_subscription_dict
 
-  def __init__(self):
-    self.getParameters()
-    self.setPathConfig()
-    self.setConnection()
-    self.pp = pprint.PrettyPrinter(indent=2)
+def getPersonName(browser):
+  """
+  Return the current person name
+  """
+  browser.goToRootObject()
+  return browser.goToObject('http://slapos.org/reg/me')['title']
 
-  def setPathConfig(self):
-    self.path_to_instance_list = PATH_TO_HOSTING_SUBSCRIPTION_LIST
-    self.path_to_instance_list = PATH_TO_INSTANCE_LIST
-    self.info = {}
+def save_informations(person_name, hosting_subscription_dict):
+  """
+  Write all informations to filesystem.
+  """
+  person_directory_path = os.path.join(os.getcwd(), person_name)
+  if not os.path.exists(person_directory_path):
+    os.mkdir(person_directory_path)
 
-  def getParameters(self):
-    parser = argparse.ArgumentParser(
-      description='Get Instance list with their request parameters')
-    parser.add_argument('--cert', dest='certificate')
-    parser.add_argument('--key', dest='key')
-    parser.add_argument('--host', dest='host',
-                        default=DEFAULT_URL)
-    self.config = parser.parse_args()
+  for hosting_subscription_title, instance_dict in hosting_subscription_dict.iteritems():
+    hosting_subscription_directory_path = os.path.join(
+        person_directory_path,
+        hosting_subscription_title
+    )
+    if not os.path.exists(hosting_subscription_directory_path):
+      os.mkdir(hosting_subscription_directory_path)
 
-  def setConnection(self):
-    self.h = httplib2.Http(disable_ssl_certificate_validation=True)
-    self.h.add_certificate(key=self.config.key,
-                      cert=self.config.certificate, domain="")
-
-
-  def getJSONFromUrl(self, url, content_type):
-    headers = {'Accept': content_type}
-    self.setConnection()
-    response, content = self.h.request(url, headers=headers)
-    if response.status != 200:
-      print "%s %s %s" % (url, response.status, response.reason)
-      return {}
-    return json.loads(content)
-
-  def travelPath(self, path, connection_dict, save_info=None):
-    url = connection_dict['href']
-    content_type = connection_dict['type']
-    current_json = self.getJSONFromUrl(url, content_type)
-    if save_info:
-      if current_json[CLASS_NAME] == save_info['class']:
-        self.info[save_info['class']] = current_json
-    if not path:
-      return current_json
-    next_element = path.pop()
-    next_element_value = current_json[LINK_NAME][next_element]
-    if type(next_element_value) == type(list()):
-      result = []
-      for item in next_element_value:
-        result.append(self.travelPath(list(path), item, save_info))
-      return result
-    else:
-      return self.travelPath(path, next_element_value, save_info)
-
-  def getInstanceList(self):
-    path = PATH_TO_HOSTING_SUBSCRIPTION_LIST
-    path.reverse()
-    connection_dict = {'type': ROOT_CONTENT_TYPE,
-                       'href': self.config.host}
-    return self.travelPath(path, connection_dict, {'class': PERSON_CLASS})
+    for instance_title, instance_informations in instance_dict.iteritems():
+      file_path = os.path.join(
+          hosting_subscription_directory_path,
+          instance_title.replace('/', '-')
+      )
+      open(file_path, 'w').write(
+          json.dumps(instance_informations, indent=2, sort_keys=True)
+      )
 
 
-  def run(self):
-    instance_list = self.getInstanceList()
-    directory_path = os.path.join(os.getcwd(),
-                                  self.info[PERSON_CLASS][PERSON_ID].replace(' ', '_'))
-    if not os.path.exists(directory_path):
-      os.mkdir(directory_path)
-    for instance in instance_list:
-      data = self.travelPath([], instance[LINK_NAME]['item'][0])
-      file_path = os.path.join(directory_path, data['title'])
-      open(file_path, 'w').write(json.dumps(data, indent=2, sort_keys=True))
-      self.pp.pprint(self.travelPath([], instance[LINK_NAME]['item'][0]))
+def run():
+ logging.basicConfig()
+
+ host, certificate, key = getParameters()
+ browser = SlaposHateoasBrowser(
+     root_uri=host,
+     ssl_certificate=certificate,
+     ssl_key=key,
+     ssl_verify=False,
+     log_level=logging.DEBUG
+ )
+
+ person_name = getPersonName(browser)
+ hosting_subscription_dict = getInstanceList(browser)
+ 
+ save_informations(person_name, hosting_subscription_dict)
 
 if __name__ == "__main__":
-  InsideRESTSlapOS().run()
+  run()
