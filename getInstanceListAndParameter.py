@@ -16,6 +16,22 @@ def getParameters():
   config = parser.parse_args()
   return config.host, config.certificate, config.key
 
+def _getInstanceListFromHostingSubscription(browser, hosting_subscription):
+  """
+  Get all instances of current hosting subscription. Same as outer loop.
+  Assume that current object is a Hosting Subscription.
+  """
+  browser.goToLinkedObject('http://slapos.org/reg/instance')
+  instance_dict = {}
+  for hosting_subscription_item_index in range(0, len(browser.getCurrentLinks()['item'])):
+    browser.goToLinkedObject('item', hosting_subscription_item_index)
+    current_instance_informations = browser.getCurrentContent()
+    instance_title = current_instance_informations.pop('title')
+    instance_dict[instance_title] = current_instance_informations
+    browser.goToPreviousObject()
+  browser.goToPreviousObject()
+  return instance_dict
+
 def getInstanceList(browser):
   """
   Return the list of all instances of all hosting subscription:
@@ -29,35 +45,27 @@ def getInstanceList(browser):
     },
     'hosting2': { ... },
   }
+  By navigating through the API to construct the final dict.
   """
   # Go to hosting subscription list
   browser.goToRootObject()
-  browser.goToObject('http://slapos.org/reg/me')
-  browser.goToObject('http://slapos.org/reg/hosting_subscription')
+  browser.goToLinkedObject('http://slapos.org/reg/me')
+  browser.goToLinkedObject('http://slapos.org/reg/hosting_subscription')
   
-  # Get all hosting subscriptions
-  for item in browser.getCurrentLinks()['item']:
-    # XXX hardcoded
-    if item['href'] not in [
-        'https://resilientmaster:10007/hosting_subscription_module/20131011-91069/HostingSubscription_getHateoas',
-        #'https://resilientmaster:10007/hosting_subscription_module/20131011-AA8D5/HostingSubscription_getHateoas',
-        ]:
-      continue
-    
-    # XXX: implement this in browser itself, don't use private method
-    browser._fetchObject(item['href'], item['type'])['_links']
-    hosting_subscription_title = browser.getCurrentObject()['title']
-    # Get all instances of current hosting subscription
-    browser.goToObject('http://slapos.org/reg/instance')
-    instance_uri_list = browser.getCurrentLinks()['item']
-    instance_dict = {}
-    hosting_subscription_dict = {}
-    for instance_uri in instance_uri_list:
-      browser._fetchObject(instance_uri['href'], instance_uri['type'])
-      current_instance_informations = browser.getCurrentObject()
-      instance_title = current_instance_informations.pop('title')
-      instance_dict[instance_title] = current_instance_informations
-    hosting_subscription_dict[hosting_subscription_title] = instance_dict
+  # Get all hosting subscriptions. To do this, we simply iterate over all items
+  hosting_subscription_dict = {}
+  for hosting_subscription_item_index in range(0, len(browser.getCurrentLinks()['item'])):
+    # XXX hardcoded to limit time spent during dev.
+    if hosting_subscription_item_index == 2:
+      break
+
+    browser.goToLinkedObjecthosting_subscription_item_index
+
+    hosting_subscription_title = browser.getCurrentContent()['title']
+    hosting_subscription_dict[hosting_subscription_title] = \
+        _getInstanceListFromHostingSubscription(browser)
+
+    browser.goToPreviousObject()
 
   return hosting_subscription_dict
 
@@ -66,7 +74,8 @@ def getPersonName(browser):
   Return the current person name
   """
   browser.goToRootObject()
-  return browser.goToObject('http://slapos.org/reg/me')['title']
+  browser.goToLinkedObject('http://slapos.org/reg/me')
+  return browser.getCurrentContent()['title']
 
 def save_informations(person_name, hosting_subscription_dict):
   """

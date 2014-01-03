@@ -10,7 +10,7 @@ import requests
 #browser.getCurrentUri() -> returns the current uri (url? uri?)
 #browser.getCurrentLinks() -> returns (content_type / href) key/value store
 #
-#browser.goToObject(thecontenttype) -> sets self.class, self.links, returns everything else if any (like "news" for Instance)
+#browser.goToLinkedObject(thecontenttype) -> sets self.class, self.links, returns everything else if any (like "news" for Instance)
 #browser.getCurrentClass() -> etc, etc.
 
 class HateoasBrowser(object):
@@ -47,12 +47,18 @@ class HateoasBrowser(object):
 
     self.me = None
     self.current_class = None
-    self.current_object = {}
+    self.current_content = {}
     self.current_links = {}
     self.current_uri = None
 
+    self._current_content_type = None
+    self._history = []
+
     self.logger = logging.getLogger('Browser')
     self.logger.setLevel(log_level)
+
+    # List of classes that are a collection
+    self.valid_collection_class_list = []
 
     # XXX: check ssl validity
 
@@ -80,7 +86,6 @@ class HateoasBrowser(object):
     """
     # XXX set self.
     self.logger.debug('Fetching %s...' % uri)
-    # XXX what about _links being something like 'item': [...] ?
     headers = {'Accept': content_type}
     response = self._get(uri, headers=headers)
     if response.status_code != 200:
@@ -89,27 +94,49 @@ class HateoasBrowser(object):
       )
       return {}
     try:
-      current_object = response.json()
-      self.current_class = current_object.pop(self.class_name)
-      self.current_links = current_object.pop(self.links_name)
-      self.current_object = current_object
-      # XXX: Is it an URI or an URL?
-      self.current_uri = uri
-      return response.json()
+      current_content = response.json()
     except ValueError:
       raise ValueError('No JSON object could be decoded from %s.\n'
            'Received data is:\n%s' % (uri, response.text))
 
-  def goToObject(self, link_relation):
+    # This allows basic history to go to the previous object.
+    self._history.append((self.current_uri, self._current_content_type))
+    self._current_content_type = content_type
+
+    # Set all informations about new (current) object
+    self.current_class = current_content.pop(self.class_name)
+    self.current_links = current_content.pop(self.links_name)
+    self.current_content = current_content
+    # XXX: Is it an URI or an URL?
+    self.current_uri = uri
+
+  def _isACollection(self):
+    """
+    Define if current object is a collection.
+    """
+    if self.getCurrentClass() in self.valid_collection_class_list:
+      return True
+    return False
+
+  def goToLinkedObject(self, link_relation, index=None):
     """
     Go to the object specified by its link_relation (definition index) and
     set informations about fetched object.
     If URI is not available from the links of the current object, raise.
+
+    Current object is either an element, or a collection of elements.
     """
-    # XXX setup discovery through definition of API -> ease navigation
-    target = self.current_links.get(link_relation, None)
-    if target is None:
-      raise AttributeError('Current object does not define such relation.')
+    # XXX: setup discovery through definition of API -> ease navigation
+    current_links = self.getCurrentLinks()
+    if index:
+      if not self.isACollection():
+        raise AttributeError('Current links do not contain a collection.')
+      target = current_links[link_relation[index]]
+    else:
+      target = current_links.get(link_relation, None)
+      if target is None:
+        raise AttributeError('Current object does not define such relation.')
+
     uri = target[self.href_name]
     content_type = target[self.content_type_name]
     return self._fetchObject(uri, content_type)
@@ -123,18 +150,29 @@ class HateoasBrowser(object):
         content_type=self.root_content_type,
     )
 
-  def getCurrentObject(self):
+  def goToPreviousObject(self):
     """
-    Return current arbitrary informations of the current object set by goToObject().
+    Go to the previous object.
+    """
+    # XXX: implement real history, not only one object.
+    # XXX: implement cache
+    if not self.history:
+      raise AttributeError('No history available.')
+    uri, content_type = self._history.pop()
+    return self._fetchObject(uri=uri, content_type=content_type)
+
+  def getCurrentContent(self):
+    """
+    Return current arbitrary informations of the current object set by goToLinkedObject().
     If no object is defined yet, raise.
     """
-    if self.current_object is None:
+    if self.current_content is None:
       raise AttributeError('No object is set yet. Call goToRootObject() before.')
-    return self.current_object
+    return self.current_content
 
   def getCurrentLinks(self):
     """
-    Return current links available for navigation set by goToObject(), using a
+    Return current links available for navigation set by goToLinkedObject(), using a
     (content_type / href) key/value data store (dict).
     If no links are defined yet, raise.
     """
@@ -144,7 +182,7 @@ class HateoasBrowser(object):
 
   def getCurrentClass(self):
     """
-    Return current class set by goToObject.
+    Return current class set by goToLinkedObject().
     If no class is defined yet, raise.
     """
     if self.current_class is None:
@@ -153,7 +191,7 @@ class HateoasBrowser(object):
 
   def getCurrentUri(self):
     """
-    Return current URI set by goToObject.
+    Return current URI set by goToLinkedObject().
     If no URI is defined yet, raise.
     """
     if self.current_uri is None:
@@ -178,3 +216,8 @@ class SlaposHateoasBrowser(HateoasBrowser):
     HateoasBrowser.__init__(self, root_uri, root_content_type,
                             ssl_certificate, ssl_key, ssl_verify,
                             log_level=log_level)
+    self.valid_collection_class_list = ['slapos.org.collection']
+
+  def goToLinkedObject(self, link_relation=None, index=None):
+    if not link_relation:
+      link_relation = 'item'
